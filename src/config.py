@@ -20,7 +20,13 @@ def _get_list(name: str, default: str) -> list[str]:
 
 @dataclass
 class Settings:
-    # Bybit
+    # Exchange (id de CCXT: bybit, binanceus, kraken, coinbase, ...). Se usa como
+    # fuente de datos de precios y, en modo live, para enviar órdenes.
+    exchange_id: str = field(default_factory=lambda: os.getenv("EXCHANGE", "bybit"))
+    # Tipo de mercado CCXT: "linear" (perpetuos USDT, Bybit) o "spot" (Binance.US, Kraken...).
+    market_type: str = field(default_factory=lambda: os.getenv("MARKET_TYPE", "linear"))
+
+    # Bybit / claves del exchange
     bybit_api_key: str = field(default_factory=lambda: os.getenv("BYBIT_API_KEY", ""))
     bybit_api_secret: str = field(default_factory=lambda: os.getenv("BYBIT_API_SECRET", ""))
     bybit_testnet: bool = field(default_factory=lambda: _get_bool("BYBIT_TESTNET", True))

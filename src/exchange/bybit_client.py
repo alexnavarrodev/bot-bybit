@@ -13,18 +13,27 @@ logger = logging.getLogger(__name__)
 
 
 class BybitClient:
+    """Cliente CCXT genérico. Por defecto Bybit, pero el exchange es configurable
+    (EXCHANGE en .env) para poder usar una fuente de datos accesible desde regiones
+    donde Bybit está bloqueado (p. ej. Binance.US o Kraken desde EE.UU.)."""
+
     def __init__(self, api_key: str | None = None, api_secret: str | None = None, testnet: bool | None = None):
         self.testnet = settings.bybit_testnet if testnet is None else testnet
-        self.exchange = ccxt.bybit(
+        exchange_class = getattr(ccxt, settings.exchange_id)
+        self.exchange = exchange_class(
             {
                 "apiKey": api_key if api_key is not None else settings.bybit_api_key,
                 "secret": api_secret if api_secret is not None else settings.bybit_api_secret,
                 "enableRateLimit": True,
-                "options": {"defaultType": settings.bybit_account_type},
+                "options": {"defaultType": settings.market_type},
             }
         )
-        if self.testnet:
-            self.exchange.set_sandbox_mode(True)
+        # El modo sandbox/testnet solo aplica a exchanges que lo soportan (Bybit).
+        if self.testnet and self.exchange.has.get("sandbox"):
+            try:
+                self.exchange.set_sandbox_mode(True)
+            except Exception:  # noqa: BLE001 - algunos exchanges no lo implementan
+                logger.warning("El exchange %s no soporta modo sandbox; usando producción.", settings.exchange_id)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def fetch_ohlcv_df(self, symbol: str, timeframe: str = "1h", limit: int = 500, since: int | None = None) -> pd.DataFrame:
