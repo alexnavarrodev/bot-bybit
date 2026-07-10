@@ -1,0 +1,18 @@
+[Unit]
+Description=Bot Bybit - Live Trading (ordenes reales)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botbybit
+WorkingDirectory=/opt/bot-bybit
+EnvironmentFile=/opt/bot-bybit/.env
+ExecStart=/opt/bot-bybit/.venv/bin/python scripts/run_live.py --i-understand-the-risk
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/var/log/bot-bybit/live.log
+StandardError=append:/var/log/bot-bybit/live.log
+
+[Install]
+WantedBy=multi-user.target

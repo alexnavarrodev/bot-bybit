@@ -1,0 +1,25 @@
+services:
+  shadow-bot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: bot-bybit-shadow
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/app/data
+    command: ["python", "scripts/run_shadow.py"]
+
+  # Descomenta cuando hayas validado la estrategia en shadow y quieras operar en real.
+  # live-bot:
+  #   build:
+  #     context: ..
+  #     dockerfile: deploy/Dockerfile
+  #   container_name: bot-bybit-live
+  #   restart: unless-stopped
+  #   env_file:
+  #     - ../.env
+  #   volumes:
+  #     - ../data:/app/data
+  #   command: ["python", "scripts/run_live.py", "--i-understand-the-risk"]

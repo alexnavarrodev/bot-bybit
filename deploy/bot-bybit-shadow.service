@@ -1,0 +1,18 @@
+[Unit]
+Description=Bot Bybit - Shadow Trading (paper trading 24/7)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botbybit
+WorkingDirectory=/opt/bot-bybit
+EnvironmentFile=/opt/bot-bybit/.env
+ExecStart=/opt/bot-bybit/.venv/bin/python scripts/run_shadow.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/var/log/bot-bybit/shadow.log
+StandardError=append:/var/log/bot-bybit/shadow.log
+
+[Install]
+WantedBy=multi-user.target
