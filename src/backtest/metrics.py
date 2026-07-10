@@ -8,7 +8,7 @@ import pandas as pd
 def total_return_pct(equity: pd.Series) -> float:
     if len(equity) < 2 or equity.iloc[0] == 0:
         return 0.0
-    return (equity.iloc[-1] / equity.iloc[0] - 1) * 100
+    return float((equity.iloc[-1] / equity.iloc[0] - 1) * 100)
 
 
 def max_drawdown_pct(equity: pd.Series) -> float:
@@ -30,7 +30,7 @@ def win_rate_pct(trade_pnls: list[float]) -> float:
     if not trade_pnls:
         return 0.0
     wins = sum(1 for p in trade_pnls if p > 0)
-    return wins / len(trade_pnls) * 100
+    return float(wins / len(trade_pnls) * 100)
 
 
 def profit_factor(trade_pnls: list[float]) -> float:
@@ -38,15 +38,17 @@ def profit_factor(trade_pnls: list[float]) -> float:
     losses = abs(sum(p for p in trade_pnls if p < 0))
     if losses == 0:
         return float("inf") if gains > 0 else 0.0
-    return gains / losses
+    return float(gains / losses)
 
 
 def summarize(equity: pd.Series, returns: pd.Series, trade_pnls: list[float], periods_per_year: int) -> dict:
+    # float()/int() garantizan tipos nativos de Python (no np.float64), que
+    # psycopg2 sí sabe adaptar al insertar en Postgres.
     return {
-        "total_return_pct": total_return_pct(equity),
-        "max_drawdown_pct": max_drawdown_pct(equity),
-        "sharpe_ratio": sharpe_ratio(returns, periods_per_year),
-        "win_rate_pct": win_rate_pct(trade_pnls),
-        "num_trades": len(trade_pnls),
-        "profit_factor": profit_factor(trade_pnls),
+        "total_return_pct": float(total_return_pct(equity)),
+        "max_drawdown_pct": float(max_drawdown_pct(equity)),
+        "sharpe_ratio": float(sharpe_ratio(returns, periods_per_year)),
+        "win_rate_pct": float(win_rate_pct(trade_pnls)),
+        "num_trades": int(len(trade_pnls)),
+        "profit_factor": float(profit_factor(trade_pnls)),
     }
