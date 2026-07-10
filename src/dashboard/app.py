@@ -50,10 +50,8 @@ def api_stats(_: None = Depends(_check_auth)) -> JSONResponse:
     cerradas: capital inicial, equity actual, retorno, win rate, Sharpe, drawdown, etc."""
     Session = get_session_factory()
     with Session() as session:
-        symbols = set(session.scalars(select(Trade.symbol)))
-        num_symbols = max(len(symbols), 1)
-        # El motor lleva un pool de capital por símbolo, cada uno arranca en initial_balance.
-        initial_capital = settings.initial_balance * num_symbols
+        # INITIAL_BALANCE es el capital TOTAL de la cuenta (se reparte entre símbolos).
+        initial_capital = settings.initial_balance
 
         closed = list(
             session.scalars(

@@ -52,7 +52,11 @@ class TradingEngine(abc.ABC):
         self.client = BybitClient()
         self.notifier = TelegramNotifier()
         self.risk_manager = RiskManager(risk_per_trade=settings.risk_per_trade, max_leverage=settings.leverage)
-        self.balances: dict[str, float] = {s: (initial_balance or settings.initial_balance) for s in self.symbols}
+        # INITIAL_BALANCE es el capital TOTAL de la cuenta, repartido a partes iguales
+        # entre los símbolos (cada símbolo opera con su propia porción del bote).
+        total_capital = initial_balance if initial_balance is not None else settings.initial_balance
+        per_symbol = total_capital / len(self.symbols) if self.symbols else total_capital
+        self.balances: dict[str, float] = {s: per_symbol for s in self.symbols}
         self.open_positions: dict[str, OpenPosition] = {}
         init_db()
 
