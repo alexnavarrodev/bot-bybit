@@ -13,6 +13,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import select
 
+import pandas as pd
+
+from src.backtest.metrics import max_drawdown_pct, profit_factor, sharpe_ratio, win_rate_pct
 from src.config import settings
 from src.database.db import get_session_factory, init_db
 from src.database.models import EquitySnapshot, Signal, Trade
@@ -39,6 +42,55 @@ def _iso(value: datetime | None) -> str | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.isoformat()
+
+
+@app.get("/api/stats")
+def api_stats(_: None = Depends(_check_auth)) -> JSONResponse:
+    """Métricas agregadas de la cuenta calculadas en vivo a partir de las operaciones
+    cerradas: capital inicial, equity actual, retorno, win rate, Sharpe, drawdown, etc."""
+    Session = get_session_factory()
+    with Session() as session:
+        symbols = set(session.scalars(select(Trade.symbol)))
+        num_symbols = max(len(symbols), 1)
+        # El motor lleva un pool de capital por símbolo, cada uno arranca en initial_balance.
+        initial_capital = settings.initial_balance * num_symbols
+
+        closed = list(
+            session.scalars(
+                select(Trade)
+                .where(Trade.is_open.is_(False), Trade.pnl.is_not(None))
+                .order_by(Trade.closed_at.asc())
+            )
+        )
+        open_trades = list(session.scalars(select(Trade).where(Trade.is_open.is_(True))))
+
+        trade_pnls = [float(t.pnl) for t in closed]
+        realized_pnl = float(sum(trade_pnls))
+
+        # Curva de equity realizada (empieza en el capital inicial y suma el PnL de cada cierre).
+        equity_values = [initial_capital]
+        running = initial_capital
+        for pnl in trade_pnls:
+            running += pnl
+            equity_values.append(running)
+        equity = pd.Series(equity_values, dtype="float64")
+        returns = equity.pct_change().fillna(0)
+        current_equity = float(equity.iloc[-1])
+
+        stats = {
+            "initial_capital": float(initial_capital),
+            "current_equity": current_equity,
+            "realized_pnl": realized_pnl,
+            "return_pct": (current_equity / initial_capital - 1) * 100 if initial_capital else 0.0,
+            "win_rate_pct": win_rate_pct(trade_pnls),
+            # periods_per_year=1 -> Sharpe por operación (mean/std), sin anualizar.
+            "sharpe_ratio": sharpe_ratio(returns, periods_per_year=1) if len(returns) > 1 else 0.0,
+            "max_drawdown_pct": max_drawdown_pct(equity),
+            "profit_factor": profit_factor(trade_pnls) if trade_pnls else 0.0,
+            "num_trades": len(closed),
+            "num_open": len(open_trades),
+        }
+        return JSONResponse(stats)
 
 
 @app.get("/api/summary")
@@ -172,6 +224,11 @@ _DASHBOARD_HTML = """
   .card { background:#171a21; border:1px solid #262b36; border-radius:10px; padding:16px; }
   .card h3 { margin:0 0 8px 0; font-size:0.95rem; color:#c9cdd6; }
   .equity { font-size:1.6rem; font-weight:600; }
+  .kpi-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px,1fr)); gap:12px; margin-bottom:24px; }
+  .kpi { background:#171a21; border:1px solid #262b36; border-radius:10px; padding:14px 16px; }
+  .kpi .label { font-size:0.72rem; color:#9aa0ac; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:6px; }
+  .kpi .value { font-size:1.35rem; font-weight:600; }
+  .kpi .sub { font-size:0.72rem; color:#9aa0ac; margin-top:2px; }
   .pos-long { color:#3ecf8e; } .pos-short { color:#ef5b5b; } .pos-flat { color:#9aa0ac; }
   table { width:100%; border-collapse:collapse; font-size:0.85rem; }
   th, td { text-align:left; padding:6px 8px; border-bottom:1px solid #262b36; }
@@ -185,6 +242,8 @@ _DASHBOARD_HTML = """
 <body>
   <h1>🤖 Bot Bybit — Dashboard</h1>
   <div class="subtitle">Rendimiento y operaciones en vivo. Se actualiza cada 30s.</div>
+
+  <div class="kpi-grid" id="kpi-grid"></div>
 
   <div class="grid" id="summary-grid"></div>
 
@@ -215,13 +274,34 @@ let chart;
 function fmt(n, d=2) { return (n === null || n === undefined) ? '-' : Number(n).toFixed(d); }
 function fmtDate(s) { return s ? new Date(s).toLocaleString() : '-'; }
 
+function signClass(n) { return (n ?? 0) >= 0 ? 'pnl-pos' : 'pnl-neg'; }
+
 async function refresh() {
-  const [summary, equity, trades, signals] = await Promise.all([
+  const [stats, summary, equity, trades, signals] = await Promise.all([
+    fetch('/api/stats').then(r => r.json()),
     fetch('/api/summary').then(r => r.json()),
     fetch('/api/equity?limit=1000').then(r => r.json()),
     fetch('/api/trades?limit=50').then(r => r.json()),
     fetch('/api/signals?limit=50').then(r => r.json()),
   ]);
+
+  const kpis = [
+    { label: 'Capital inicial', value: fmt(stats.initial_capital) + ' USDT', cls: '' },
+    { label: 'Equity actual', value: fmt(stats.current_equity) + ' USDT',
+      sub: (stats.realized_pnl >= 0 ? '+' : '') + fmt(stats.realized_pnl) + ' USDT realizado', cls: signClass(stats.realized_pnl) },
+    { label: 'Retorno', value: (stats.return_pct >= 0 ? '+' : '') + fmt(stats.return_pct) + '%', cls: signClass(stats.return_pct) },
+    { label: 'Win rate', value: fmt(stats.win_rate_pct) + '%', cls: '' },
+    { label: 'Sharpe', value: fmt(stats.sharpe_ratio), cls: signClass(stats.sharpe_ratio) },
+    { label: 'Max drawdown', value: fmt(stats.max_drawdown_pct) + '%', cls: 'pnl-neg' },
+    { label: 'Profit factor', value: (stats.profit_factor === null ? '-' : fmt(stats.profit_factor)), cls: '' },
+    { label: 'Operaciones', value: stats.num_trades, sub: stats.num_open + ' abiertas', cls: '' },
+  ];
+  document.getElementById('kpi-grid').innerHTML = kpis.map(k => `
+    <div class="kpi">
+      <div class="label">${k.label}</div>
+      <div class="value ${k.cls}">${k.value}</div>
+      ${k.sub ? `<div class="sub">${k.sub}</div>` : ''}
+    </div>`).join('');
 
   const grid = document.getElementById('summary-grid');
   grid.innerHTML = summary.map(s => {
