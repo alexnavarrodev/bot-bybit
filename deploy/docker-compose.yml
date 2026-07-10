@@ -1,15 +1,49 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bot-bybit-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-botbybit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-botbybit}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-botbybit}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   shadow-bot:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     container_name: bot-bybit-shadow
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     env_file:
       - ../.env
     volumes:
       - ../data:/app/data
     command: ["python", "scripts/run_shadow.py"]
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: bot-bybit-dashboard
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ../.env
+    ports:
+      - "8080:8080"
+    command: ["uvicorn", "src.dashboard.app:app", "--host", "0.0.0.0", "--port", "8080"]
 
   # Descomenta cuando hayas validado la estrategia en shadow y quieras operar en real.
   # live-bot:
@@ -18,8 +52,14 @@ services:
   #     dockerfile: deploy/Dockerfile
   #   container_name: bot-bybit-live
   #   restart: unless-stopped
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
   #   env_file:
   #     - ../.env
   #   volumes:
   #     - ../data:/app/data
   #   command: ["python", "scripts/run_live.py", "--i-understand-the-risk"]
+
+volumes:
+  pgdata:

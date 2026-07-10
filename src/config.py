@@ -45,6 +45,10 @@ class Settings:
     # Loop
     poll_interval_seconds: int = field(default_factory=lambda: int(os.getenv("POLL_INTERVAL_SECONDS", "60")))
 
+    # Dashboard
+    dashboard_user: str = field(default_factory=lambda: os.getenv("DASHBOARD_USER", "admin"))
+    dashboard_password: str = field(default_factory=lambda: os.getenv("DASHBOARD_PASSWORD", ""))
+
     def validate_for_live(self) -> None:
         if not self.bybit_api_key or not self.bybit_api_secret:
             raise ValueError("BYBIT_API_KEY / BYBIT_API_SECRET son obligatorios en modo live")

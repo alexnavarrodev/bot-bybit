@@ -3,11 +3,12 @@
 Bot de trading algorítmico para Bybit (BTC/USDT y ETH/USDT perpetuos), con:
 
 - **Datos y ejecución** vía [CCXT](https://github.com/ccxt/ccxt) (Bybit).
-- **Base de datos** SQLite (local/desarrollo) o PostgreSQL/[Supabase](https://supabase.com) (producción), vía SQLAlchemy — se cambia con una sola variable de entorno.
+- **Base de datos** PostgreSQL (self-hosted en el VPS vía Docker, o Supabase/otro Postgres externo) o SQLite (local/desarrollo), vía SQLAlchemy — se cambia con una sola variable de entorno.
 - **Alertas por Telegram** (señales, aperturas/cierres de trade, errores).
+- **Dashboard web** con el rendimiento y las operaciones en vivo (ver sección 8).
 - **3 modos de ejecución**: `backtest` (histórico), `shadow` (paper trading 24/7 con precios reales, sin arriesgar capital) y `live` (órdenes reales).
 - **5 estrategias** listas para comparar en BTC y ETH.
-- Configuración de despliegue para VPS (systemd o Docker).
+- Configuración de despliegue para VPS (Docker Compose todo-en-uno o systemd).
 
 ## Estructura
 
@@ -21,12 +22,14 @@ src/
   strategies/                # Las 5 estrategias + interfaz base
   backtest/                  # Motor de backtesting + métricas
   core/                      # Loop compartido, shadow trader, live trader, risk manager
+  dashboard/                 # App FastAPI de solo lectura (rendimiento y operaciones)
 scripts/
   run_backtest.py   # Descarga histórico y compara las 5 estrategias
   run_shadow.py      # Paper trading 24/7 con datos reales
   run_live.py        # Trading real (requiere --i-understand-the-risk)
 deploy/
-  Dockerfile, docker-compose.yml, *.service (systemd)
+  Dockerfile, docker-compose.yml (postgres + shadow-bot + dashboard), *.service (systemd)
+  vps_setup.sh        # Instalación todo-en-uno en un VPS limpio
 ```
 
 ## 1. Instalación local
@@ -51,18 +54,26 @@ cp .env.example .env   # y rellena las claves
 
 ## 3. Base de datos
 
-**Opción A — SQLite (por defecto, recomendado para shadow/backtest local):**
+**Opción A — Postgres self-hosted en el VPS (recomendado para producción, incluida en `docker-compose.yml`):**
+
+El propio `docker-compose.yml` levanta un contenedor `postgres:16-alpine` con volumen persistente. Solo tienes que rellenar en `.env`:
+```
+POSTGRES_USER=botbybit
+POSTGRES_PASSWORD=elige-una-contraseña-fuerte
+POSTGRES_DB=botbybit
+DATABASE_URL=postgresql+psycopg2://botbybit:elige-una-contraseña-fuerte@postgres:5432/botbybit
+```
+(el host `postgres` es el nombre del servicio dentro de la red de Docker Compose; no cambia aunque cambie la IP del VPS).
+
+**Opción B — SQLite (más simple, un solo archivo, para desarrollo local):**
 ```
 DATABASE_URL=sqlite:///data/bot.db
 ```
 
-**Opción B — Supabase (Postgres, recomendado para producción/VPS):**
-1. Crea un proyecto en https://supabase.com.
-2. En *Project Settings → Database* copia la cadena de conexión (usa el **connection pooler**, puerto 6543, para evitar agotar conexiones).
-3. En `.env`:
-   ```
-   DATABASE_URL=postgresql+psycopg2://postgres:TU_PASSWORD@db.xxxxx.supabase.co:5432/postgres
-   ```
+**Opción C — Supabase u otro Postgres externo:**
+```
+DATABASE_URL=postgresql+psycopg2://postgres:TU_PASSWORD@db.xxxxx.supabase.co:5432/postgres
+```
 
 Las tablas (`trades`, `signals`, `equity_snapshots`, `backtest_runs`) se crean automáticamente al arrancar cualquier script (`init_db()`).
 
@@ -110,30 +121,51 @@ python scripts/run_live.py --strategy sma_crossover --i-understand-the-risk
 - Usa el mismo `RiskManager` (tamaño de posición por ATR, SL/TP) que el shadow trader.
 - Empieza con `BYBIT_TESTNET=true` y capital simbólico antes de pasar a producción.
 
-## 8. Despliegue en VPS
+## 8. Despliegue en VPS (Docker, todo-en-uno)
 
-**Opción A — Docker (recomendado):**
+Script de instalación automática (`deploy/vps_setup.sh`): instala Docker si falta, levanta Postgres + el shadow trader + el dashboard, y abre el puerto del dashboard en el firewall si `ufw` está activo.
+
 ```bash
-cd deploy
-docker compose up -d --build shadow-bot
-docker compose logs -f shadow-bot
+ssh root@TU_IP_VPS
+git clone https://github.com/alexnavarrodev/bot-bybit.git
+cd bot-bybit
+cp .env.example .env
+nano .env   # rellena TELEGRAM_*, POSTGRES_PASSWORD, DASHBOARD_PASSWORD, estrategia, símbolos...
+bash deploy/vps_setup.sh
 ```
 
-**Opción B — systemd (sin Docker):**
+Al terminar, el script imprime la URL del dashboard (`http://TU_IP_VPS:8080`). **Recuerda abrir el puerto 8080 también en el firewall del panel de Hostinger** (VPS → Firewall) si el tráfico no llega — `ufw` solo cubre el firewall del propio sistema operativo.
+
+Para pasar a real más adelante, descomenta el servicio `live-bot` en `deploy/docker-compose.yml` y ejecútalo con `docker compose -f deploy/docker-compose.yml up -d --build live-bot` (revisa antes con testnet).
+
+**Alternativa — systemd (sin Docker):**
 ```bash
 sudo useradd -r -s /bin/false botbybit
 sudo mkdir -p /opt/bot-bybit /var/log/bot-bybit
 sudo chown botbybit:botbybit /var/log/bot-bybit
 # copia el repo a /opt/bot-bybit, crea el venv e instala requirements ahí
+# (necesitarás además una instancia de Postgres/SQLite propia, systemd no la gestiona)
 sudo cp deploy/bot-bybit-shadow.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now bot-bybit-shadow
 sudo journalctl -u bot-bybit-shadow -f
 ```
 
-Cuando quieras pasar a real, usa `bot-bybit-live.service` (mismo procedimiento) — revisa el archivo, ejecuta primero en testnet.
+## 9. Dashboard — seguir el rendimiento en vivo
 
-## 9. Tests
+`src/dashboard/app.py` (FastAPI) sirve una página con:
+- Equity actual y posición abierta por símbolo/estrategia.
+- Curva de equity (gráfico).
+- Últimas operaciones (con PnL) y últimas señales generadas.
+
+Se actualiza sola cada 30s y está protegida con **HTTP Basic Auth** (`DASHBOARD_USER` / `DASHBOARD_PASSWORD` en `.env` — cambia el valor por defecto antes de desplegar). En el VPS queda disponible en `http://TU_IP_VPS:8080` una vez corres `deploy/vps_setup.sh` (o `docker compose up -d dashboard`).
+
+Para probarlo en local:
+```bash
+uvicorn src.dashboard.app:app --reload --port 8080
+```
+
+## 10. Tests
 
 ```bash
 pytest tests/ -q
