@@ -3,14 +3,18 @@ services:
     image: postgres:16-alpine
     container_name: bot-bybit-postgres
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-botbybit}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
-      POSTGRES_DB: ${POSTGRES_DB:-botbybit}
+    # env_file carga POSTGRES_USER/PASSWORD/DB directamente en el contenedor,
+    # sin depender de la interpolación ${...} de compose (que busca un .env
+    # junto al fichero compose y no en la raíz del repo). Así el usuario/clave
+    # con los que Postgres se INICIALIZA siempre coinciden con DATABASE_URL.
+    env_file:
+      - ../.env
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-botbybit}"]
+      # $$ escapa la variable para que la expanda el shell DENTRO del contenedor
+      # (usando el env cargado por env_file), no la interpolación de compose.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-botbybit}"]
       interval: 5s
       timeout: 5s
       retries: 10

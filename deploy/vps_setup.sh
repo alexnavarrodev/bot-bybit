@@ -31,7 +31,9 @@ fi
 systemctl enable --now docker
 
 echo "==> Construyendo y levantando los servicios (postgres + shadow-bot + dashboard)..."
-docker compose -f deploy/docker-compose.yml up -d --build postgres shadow-bot dashboard
+# --env-file .env fuerza a compose a leer el .env de la raíz del repo para la
+# interpolación ${...}; sin él, compose busca un .env junto al fichero compose.
+docker compose --env-file .env -f deploy/docker-compose.yml up -d --build postgres shadow-bot dashboard
 
 echo "==> Abriendo el puerto 8080 en el firewall local (ufw), si está activo..."
 if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
