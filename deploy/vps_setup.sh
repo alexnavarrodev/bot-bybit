@@ -38,7 +38,7 @@ if command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
   ufw allow 8080/tcp || true
 fi
 
-PUBLIC_IP=$(curl -fsSL --max-time 5 ifconfig.me || hostname -I | awk '{print $1}')
+PUBLIC_IP=$(curl -4 -fsSL --max-time 5 ifconfig.me || hostname -I | awk '{print $1}')
 
 echo ""
 echo "======================================================================"
