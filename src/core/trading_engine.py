@@ -58,6 +58,10 @@ class TradingEngine(abc.ABC):
         per_symbol = total_capital / len(self.symbols) if self.symbols else total_capital
         self.balances: dict[str, float] = {s: per_symbol for s in self.symbols}
         self.open_positions: dict[str, OpenPosition] = {}
+        # Marca de tiempo de la última vela cerrada vista / usada para entrar, por símbolo.
+        # Evita reevaluar la vela en formación y abrir más de una entrada por vela.
+        self.last_bar_seen: dict[str, object] = {}
+        self.last_entry_bar: dict[str, object] = {}
         init_db()
 
     def run_forever(self) -> None:
@@ -80,33 +84,42 @@ class TradingEngine(abc.ABC):
     def process_symbol(self, symbol: str) -> None:
         needed = max(self.strategy.min_bars + 50, 200)
         df = self.client.fetch_ohlcv_df(symbol, timeframe=self.timeframe, limit=needed)
-        if len(df) < self.strategy.min_bars:
+        if len(df) < self.strategy.min_bars + 1:
             logger.warning("Datos insuficientes para %s (%d velas)", symbol, len(df))
             return
 
-        indicators_df = self.strategy.compute_indicators(df)
-        signal = self.strategy.latest_signal(df)
-        price = float(df["close"].iloc[-1])
-        atr_value = float(atr(df["high"], df["low"], df["close"]).iloc[-1])
+        # Decisión SOLO con velas cerradas: se descarta la última vela (en formación),
+        # que cambia cada minuto y provocaba cruces falsos y sobreoperativa.
+        closed_df = df.iloc[:-1]
+        bar_time = closed_df.index[-1]
+        signal = self.strategy.latest_signal(closed_df)
+        price = float(df["close"].iloc[-1])  # precio actual, para SL/TP y ejecución
+        atr_value = float(atr(closed_df["high"], closed_df["low"], closed_df["close"]).iloc[-1])
 
-        self._persist_signal(symbol, signal, price)
+        # La señal se registra una vez por vela nueva (no en cada ciclo de 60s).
+        if self.last_bar_seen.get(symbol) != bar_time:
+            self._persist_signal(symbol, signal, price)
+            self.last_bar_seen[symbol] = bar_time
 
         position = self.open_positions.get(symbol)
 
-        if position is None:
-            if signal in (PositionSignal.LONG, PositionSignal.SHORT):
-                self._open_position(symbol, signal, price, atr_value)
+        # Con posición abierta: se vigilan SL/TP y giro de señal en cada ciclo.
+        if position is not None:
+            hit_sl, hit_tp = self._check_stops(position, price)
+            flipped = signal != PositionSignal.FLAT and signal.value != position.side
+            if hit_sl or hit_tp or flipped:
+                reason = "stop_loss" if hit_sl else "take_profit" if hit_tp else "reverse_signal"
+                self._close_position(symbol, position, price, reason)
+                # Una reversión solo reabre si no hemos entrado ya en esta vela.
+                if flipped and self.last_entry_bar.get(symbol) != bar_time:
+                    self._open_position(symbol, signal, price, atr_value)
+                    self.last_entry_bar[symbol] = bar_time
             return
 
-        hit_sl, hit_tp = self._check_stops(position, price)
-        flipped = signal != PositionSignal.FLAT and signal.value != position.side
-        should_flatten = signal == PositionSignal.FLAT and False  # una señal FLAT no cierra por sí sola; solo SL/TP o giro
-
-        if hit_sl or hit_tp or flipped:
-            reason = "stop_loss" if hit_sl else "take_profit" if hit_tp else "reverse_signal"
-            self._close_position(symbol, position, price, reason)
-            if flipped:
-                self._open_position(symbol, signal, price, atr_value)
+        # Sin posición: se abre como MUCHO una vez por vela cerrada.
+        if signal in (PositionSignal.LONG, PositionSignal.SHORT) and self.last_entry_bar.get(symbol) != bar_time:
+            self._open_position(symbol, signal, price, atr_value)
+            self.last_entry_bar[symbol] = bar_time
 
     def _check_stops(self, position: OpenPosition, price: float) -> tuple[bool, bool]:
         if position.side == "LONG":
