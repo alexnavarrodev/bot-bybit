@@ -11,6 +11,8 @@ import abc
 import logging
 import time
 
+from sqlalchemy import select
+
 from src.config import settings
 from src.database.db import init_db, session_scope
 from src.database.models import EquitySnapshot, Signal as SignalModel, Trade
@@ -55,14 +57,53 @@ class TradingEngine(abc.ABC):
         # INITIAL_BALANCE es el capital TOTAL de la cuenta, repartido a partes iguales
         # entre los símbolos (cada símbolo opera con su propia porción del bote).
         total_capital = initial_balance if initial_balance is not None else settings.initial_balance
-        per_symbol = total_capital / len(self.symbols) if self.symbols else total_capital
-        self.balances: dict[str, float] = {s: per_symbol for s in self.symbols}
+        self.per_symbol_initial = total_capital / len(self.symbols) if self.symbols else total_capital
+        self.balances: dict[str, float] = {}
         self.open_positions: dict[str, OpenPosition] = {}
         # Marca de tiempo de la última vela cerrada vista / usada para entrar, por símbolo.
         # Evita reevaluar la vela en formación y abrir más de una entrada por vela.
         self.last_bar_seen: dict[str, object] = {}
         self.last_entry_bar: dict[str, object] = {}
         init_db()
+        self._restore_state()
+
+    def _restore_state(self) -> None:
+        """Recupera posiciones abiertas y balance real desde la BD al arrancar,
+        para que un restart del contenedor no duplique entradas ni pierda el
+        seguimiento del capital ganado/perdido hasta ahora."""
+        with session_scope() as session:
+            for symbol in self.symbols:
+                closed_trades = session.scalars(
+                    select(Trade).where(
+                        Trade.mode == self.mode,
+                        Trade.strategy == self.strategy.name,
+                        Trade.symbol == symbol,
+                        Trade.is_open.is_(False),
+                    )
+                ).all()
+                realized_pnl = sum(t.pnl or 0.0 for t in closed_trades)
+                self.balances[symbol] = self.per_symbol_initial + realized_pnl
+
+                open_trade = session.scalar(
+                    select(Trade)
+                    .where(
+                        Trade.mode == self.mode,
+                        Trade.strategy == self.strategy.name,
+                        Trade.symbol == symbol,
+                        Trade.is_open.is_(True),
+                    )
+                    .order_by(Trade.opened_at.desc())
+                )
+                if open_trade is not None:
+                    self.open_positions[symbol] = OpenPosition(
+                        side=open_trade.side,
+                        entry_price=open_trade.entry_price,
+                        quantity=open_trade.quantity,
+                        stop_loss=open_trade.stop_loss,
+                        take_profit=open_trade.take_profit,
+                        trade_id=open_trade.id,
+                    )
+                    logger.info("Recuperada posición abierta de %s: %s @ %.2f", symbol, open_trade.side, open_trade.entry_price)
 
     def run_forever(self) -> None:
         logger.info(
@@ -140,7 +181,7 @@ class TradingEngine(abc.ABC):
             )
 
     def _open_position(self, symbol: str, signal: PositionSignal, price: float, atr_value: float) -> None:
-        balance = self.balances.get(symbol, settings.initial_balance)
+        balance = self.balances.get(symbol, self.per_symbol_initial)
         sizing = self.risk_manager.size_position(balance, price, atr_value, signal.value)
         if sizing.quantity <= 0:
             return
@@ -158,7 +199,7 @@ class TradingEngine(abc.ABC):
 
     def _close_position(self, symbol: str, position: OpenPosition, price: float, reason: str) -> None:
         pnl, pnl_pct = self._execute_exit(symbol, position, price, reason)
-        self.balances[symbol] = self.balances.get(symbol, settings.initial_balance) + pnl
+        self.balances[symbol] = self.balances.get(symbol, self.per_symbol_initial) + pnl
         self.notifier.notify_trade_closed(self.strategy.name, symbol, position.side, pnl, pnl_pct, self.mode)
         with session_scope() as session:
             session.add(EquitySnapshot(mode=self.mode, strategy=self.strategy.name, symbol=symbol, equity=self.balances[symbol]))
